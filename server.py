@@ -5,7 +5,7 @@ import yfinance as yf
 app = Flask(__name__)
 CORS(app)
 
-POPULAR_SYMBOLS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX', 'AMD', 'DIS', 'NKE', 'V', 'JPM', 'BAC']
+POPULAR_SYMBOLS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA']
 
 # Store last known data to show deltas
 last_prices = {}
