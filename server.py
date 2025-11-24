@@ -1,6 +1,7 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
+import time
 
 app = Flask(__name__)
 CORS(app)
@@ -10,6 +11,25 @@ FINNHUB_API_KEY = 'd4i6sm1r01qkv40h6910d4i6sm1r01qkv40h691g'
 FINNHUB_BASE_URL = 'https://finnhub.io/api/v1'
 
 POPULAR_SYMBOLS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA']
+
+# Cache with 15 second lifetime
+cache = {}
+CACHE_TTL = 15
+
+def get_from_cache_or_fetch(symbol):
+    """Get from cache or fetch fresh"""
+    now = time.time()
+    
+    if symbol in cache:
+        data, timestamp = cache[symbol]
+        if now - timestamp < CACHE_TTL:
+            return data
+    
+    # Fetch fresh
+    data = get_stock_data(symbol)
+    if data:
+        cache[symbol] = (data, now)
+    return data
 
 def get_stock_data(symbol):
     """Get real-time stock data from Finnhub"""
@@ -69,7 +89,7 @@ def health():
 
 @app.route('/api/quote/<symbol>')
 def get_quote(symbol):
-    data = get_stock_data(symbol)
+    data = get_from_cache_or_fetch(symbol)
     if data:
         return jsonify(data)
     return jsonify({'error': 'Not found'}), 404
@@ -80,7 +100,7 @@ def get_quotes():
     symbols = request.json.get('symbols', [])
     results = []
     for symbol in symbols[:20]:
-        data = get_stock_data(symbol)
+        data = get_from_cache_or_fetch(symbol)
         if data:
             results.append(data)
     return jsonify(results)
@@ -90,7 +110,7 @@ def get_quotes():
 def get_popular():
     results = []
     for symbol in POPULAR_SYMBOLS:
-        data = get_stock_data(symbol)
+        data = get_from_cache_or_fetch(symbol)
         if data:
             results.append(data)
     return jsonify(results)
