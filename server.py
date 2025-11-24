@@ -5,77 +5,53 @@ import yfinance as yf
 app = Flask(__name__)
 CORS(app)
 
-POPULAR_SYMBOLS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA']
-
-# Store last known data to show deltas
-last_prices = {}
+POPULAR_SYMBOLS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA']
 
 def get_stock_data(symbol):
     """Get real-time stock data with proper daily change"""
     symbol = symbol.upper()
     
     try:
-        # Create fresh ticker each time (avoid yfinance internal cache)
         ticker = yf.Ticker(symbol)
         
-        # Force fresh data by getting fast_info first (less cached)
-        try:
-            fast = ticker.fast_info
-            price = fast.get('lastPrice') or fast.get('last_price')
-            prev_close = fast.get('previousClose') or fast.get('previous_close')
-        except:
-            price = None
-            prev_close = None
-        
-        # Get full info for name and fallback prices
+        # Set shorter timeout
         info = ticker.info
         
         # Get price from multiple sources
-        if price is None:
-            price = (
-                info.get('regularMarketPrice') or 
-                info.get('currentPrice') or 
-                info.get('ask') or 
-                info.get('bid')
-            )
+        price = (
+            info.get('regularMarketPrice') or 
+            info.get('currentPrice') or 
+            info.get('ask') or 
+            info.get('bid')
+        )
         
-        # Still no price? Use history as last resort
+        # Fallback to history with timeout
         if price is None:
-            hist = ticker.history(period='1d', interval='1m')
-            if len(hist) > 0:
-                price = float(hist['Close'].iloc[-1])
-            else:
-                hist = ticker.history(period='2d')
+            try:
+                hist = ticker.history(period='2d', timeout=10)
                 if len(hist) > 0:
                     price = float(hist['Close'].iloc[-1])
                 else:
+                    print(f"⚠️ No price data for {symbol}")
                     return None
+            except Exception as e:
+                print(f"⚠️ History fetch failed for {symbol}: {e}")
+                return None
         
         # Get previous close
-        if prev_close is None:
-            prev_close = (
-                info.get('previousClose') or 
-                info.get('regularMarketPreviousClose')
-            )
+        prev_close = (
+            info.get('previousClose') or 
+            info.get('regularMarketPreviousClose')
+        )
         
         if prev_close is None:
-            hist = ticker.history(period='5d')
-            if len(hist) >= 2:
-                prev_close = float(hist['Close'].iloc[-2])
-            else:
-                prev_close = price
+            prev_close = price
         
         # Calculate change
         price = float(price)
         prev_close = float(prev_close)
         change = price - prev_close
         pct = (change / prev_close) * 100 if prev_close != 0 else 0
-        
-        # Track if price changed from last fetch (for debugging)
-        if symbol in last_prices:
-            if last_prices[symbol] != price:
-                print(f"📈 {symbol}: ${last_prices[symbol]:.2f} → ${price:.2f}")
-        last_prices[symbol] = price
         
         return {
             'symbol': symbol,
@@ -90,7 +66,7 @@ def get_stock_data(symbol):
         }
         
     except Exception as e:
-        print(f"❌ Error fetching {symbol}: {e}")
+        print(f"❌ Error fetching {symbol}: {str(e)[:100]}")
         return None
 
 
