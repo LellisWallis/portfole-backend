@@ -1,72 +1,64 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-import yfinance as yf
+import requests
 
 app = Flask(__name__)
 CORS(app)
 
+# Your Finnhub API key
+FINNHUB_API_KEY = 'd4i6sm1r01qkv40h6910d4i6sm1r01qkv40h691g'
+FINNHUB_BASE_URL = 'https://finnhub.io/api/v1'
+
 POPULAR_SYMBOLS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA']
 
 def get_stock_data(symbol):
-    """Get real-time stock data with proper daily change"""
+    """Get real-time stock data from Finnhub"""
     symbol = symbol.upper()
     
     try:
-        ticker = yf.Ticker(symbol)
+        # Get quote (current price)
+        quote_url = f'{FINNHUB_BASE_URL}/quote'
+        quote_params = {'symbol': symbol, 'token': FINNHUB_API_KEY}
+        quote_response = requests.get(quote_url, params=quote_params, timeout=5)
         
-        # Set shorter timeout
-        info = ticker.info
+        if quote_response.status_code != 200:
+            return None
+            
+        quote_data = quote_response.json()
         
-        # Get price from multiple sources
-        price = (
-            info.get('regularMarketPrice') or 
-            info.get('currentPrice') or 
-            info.get('ask') or 
-            info.get('bid')
-        )
+        # Get company profile (for name)
+        profile_url = f'{FINNHUB_BASE_URL}/stock/profile2'
+        profile_params = {'symbol': symbol, 'token': FINNHUB_API_KEY}
+        profile_response = requests.get(profile_url, params=profile_params, timeout=5)
         
-        # Fallback to history with timeout
-        if price is None:
-            try:
-                hist = ticker.history(period='2d', timeout=10)
-                if len(hist) > 0:
-                    price = float(hist['Close'].iloc[-1])
-                else:
-                    print(f"⚠️ No price data for {symbol}")
-                    return None
-            except Exception as e:
-                print(f"⚠️ History fetch failed for {symbol}: {e}")
-                return None
+        profile_data = profile_response.json() if profile_response.status_code == 200 else {}
         
-        # Get previous close
-        prev_close = (
-            info.get('previousClose') or 
-            info.get('regularMarketPreviousClose')
-        )
+        # Extract data
+        current_price = quote_data.get('c', 0)  # Current price
+        prev_close = quote_data.get('pc', current_price)  # Previous close
+        high = quote_data.get('h', 0)  # High
+        low = quote_data.get('l', 0)  # Low
         
-        if prev_close is None:
-            prev_close = price
+        if current_price == 0:
+            return None
         
-        # Calculate change
-        price = float(price)
-        prev_close = float(prev_close)
-        change = price - prev_close
-        pct = (change / prev_close) * 100 if prev_close != 0 else 0
+        change = current_price - prev_close
+        change_percent = (change / prev_close * 100) if prev_close > 0 else 0
         
         return {
             'symbol': symbol,
-            'name': info.get('longName') or info.get('shortName') or symbol,
-            'price': round(price, 2),
+            'name': profile_data.get('name', symbol),
+            'price': round(current_price, 2),
             'change': round(change, 2),
-            'changePercent': round(pct, 2),
+            'changePercent': round(change_percent, 2),
             'previousClose': round(prev_close, 2),
-            'dayHigh': info.get('dayHigh') or info.get('regularMarketDayHigh'),
-            'dayLow': info.get('dayLow') or info.get('regularMarketDayLow'),
-            'volume': info.get('volume') or info.get('regularMarketVolume')
+            'dayHigh': round(high, 2) if high > 0 else None,
+            'dayLow': round(low, 2) if low > 0 else None,
+            'volume': None  # Finnhub doesn't provide volume in quote endpoint
         }
         
     except Exception as e:
-        print(f"❌ Error fetching {symbol}: {str(e)[:100]}")
+        print(f"❌ Error fetching {symbol}: {e}")
         return None
 
 
@@ -109,23 +101,52 @@ def get_history(symbol):
     """Get historical price data for charts"""
     period = request.args.get('period', '1mo')
     
+    # Map period to Finnhub resolution and time range
+    period_map = {
+        '1d': ('5', 1),      # 5 min resolution, 1 day
+        '5d': ('30', 5),     # 30 min, 5 days
+        '1mo': ('D', 30),    # Daily, 30 days
+        '3mo': ('D', 90),    # Daily, 90 days
+        '6mo': ('D', 180),   # Daily, 180 days
+        '1y': ('D', 365),    # Daily, 1 year
+        '5y': ('W', 1825)    # Weekly, 5 years
+    }
+    
+    resolution, days = period_map.get(period, ('D', 30))
+    
     try:
-        ticker = yf.Ticker(symbol.upper())
-        hist = ticker.history(period=period)
+        import time
+        to_time = int(time.time())
+        from_time = to_time - (days * 24 * 60 * 60)
         
-        if len(hist) == 0:
+        url = f'{FINNHUB_BASE_URL}/stock/candle'
+        params = {
+            'symbol': symbol.upper(),
+            'resolution': resolution,
+            'from': from_time,
+            'to': to_time,
+            'token': FINNHUB_API_KEY
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code != 200 or response.json().get('s') != 'ok':
             return jsonify({'error': 'No historical data'}), 404
         
-        # Convert to list of data points
+        candles = response.json()
+        
+        # Convert to our format
         data = []
-        for date, row in hist.iterrows():
+        for i in range(len(candles['t'])):
+            from datetime import datetime
+            date = datetime.fromtimestamp(candles['t'][i]).strftime('%Y-%m-%d')
             data.append({
-                'date': date.strftime('%Y-%m-%d'),
-                'open': round(row['Open'], 2),
-                'high': round(row['High'], 2),
-                'low': round(row['Low'], 2),
-                'close': round(row['Close'], 2),
-                'volume': int(row['Volume'])
+                'date': date,
+                'open': round(candles['o'][i], 2),
+                'high': round(candles['h'][i], 2),
+                'low': round(candles['l'][i], 2),
+                'close': round(candles['c'][i], 2),
+                'volume': int(candles['v'][i])
             })
         
         return jsonify({
@@ -141,20 +162,11 @@ def get_history(symbol):
 
 if __name__ == '__main__':
     print('=' * 60)
-    print('🚀 PORTFOLE BACKEND SERVER')
+    print('🚀 PORTFOLE BACKEND SERVER (FINNHUB)')
     print('=' * 60)
     print('📡 Server: http://127.0.0.1:5001')
     print('❤️  Health: http://127.0.0.1:5001/health')
     print('📊 Popular: http://127.0.0.1:5001/api/popular')
-    print('=' * 60)
-    print('')
-    print('⚠️  NOTE: Stock prices only move when markets are OPEN!')
-    print('   US Markets: Mon-Fri, 9:30 AM - 4:00 PM EST')
-    print('   (That\'s 3:30 PM - 10:00 PM Swedish time)')
-    print('')
-    print('   Today is a weekend = markets closed = prices frozen')
-    print('   The CHANGE shown is Friday vs Thursday close')
-    print('')
     print('=' * 60)
     print('Press CTRL+C to stop')
     print('=' * 60)
